@@ -1,5 +1,5 @@
 {
-  "fetched_at": "2026-09-24T10:45:25.889903+00:00",
+  "fetched_at": "2026-09-24T10:48:01.363407+00:00",
   "channel_id": "5f5edcc0f04555115dfb0845",
   "channel_url": "https://stand.fm/channels/5f5edcc0f04555115dfb0845",
   "strategy_used": null,
@@ -12,12 +12,12 @@
     "  404 https://stand.fm/rss/channels/5f5edcc0f04555115dfb0845 (65410 bytes, text/html; charset=utf-8)",
     "  NG https://rss.stand.fm/5f5edcc0f04555115dfb0845 -> ConnectionError: HTTPSConnectionPool(host='rss.stand.fm', port=443): Max retries exceeded with url: /5f5edcc0f04555115dfb0845 (Caused by NameResolutionError(\"HTTPSConnection(host='rss.stand.fm', port=443): Failed to resolve 'rss.stand.fm' ([Errno -2] Name or service not known)\"))",
     "戦略 [embedded_json] を試行",
-    "  200 https://stand.fm/channels/5f5edcc0f04555115dfb0845 (154660 bytes, text/html; charset=utf-8)",
+    "  200 https://stand.fm/channels/5f5edcc0f04555115dfb0845 (154501 bytes, text/html; charset=utf-8)",
     "  埋め込みJSONから音声URLを見つけられず",
     "戦略 [api] を試行",
-    "  404 https://stand.fm/api/channels/5f5edcc0f04555115dfb0845/episodes (65569 bytes, text/html; charset=utf-8)",
+    "  404 https://stand.fm/api/channels/5f5edcc0f04555115dfb0845/episodes (65410 bytes, text/html; charset=utf-8)",
     "  404 https://stand.fm/api/v2/channels/5f5edcc0f04555115dfb0845/episodes (65410 bytes, text/html; charset=utf-8)",
-    "  404 https://stand.fm/api/v1/channels/5f5edcc0f04555115dfb0845/episodes (65569 bytes, text/html; charset=utf-8)",
+    "  404 https://stand.fm/api/v1/channels/5f5edcc0f04555115dfb0845/episodes (65410 bytes, text/html; charset=utf-8)",
     "  200 https://stand.fm/api/channels/5f5edcc0f04555115dfb0845 (24881 bytes, application/json; charset=utf-8)"
   ]
 }
