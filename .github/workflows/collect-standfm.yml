@@ -1,0 +1,136 @@
+name: collect-standfm
+
+# stand.fm のエピソードを取得して文字起こしし、リポジトリに蓄積する。
+# Actions のランナーは外部ネットワークに制限がないため、収集はここで行う。
+#
+# 注意: schedule と workflow_dispatch は、このワークフローファイルが
+# デフォルトブランチ(master)に存在して初めて有効になる。現時点では
+# push トリガーのみが発火する。
+
+on:
+  push:
+    branches: [claude/okuda-core-thinking-qp8c80]
+    paths:
+      - "scripts/**"
+      - ".github/workflows/collect-standfm.yml"
+      - "requirements.txt"
+  schedule:
+    - cron: "17 19 * * *"
+  workflow_dispatch:
+    inputs:
+      engine:
+        description: "文字起こしエンジン"
+        type: choice
+        options: [faster-whisper, gemini]
+        default: faster-whisper
+      whisper_model:
+        description: "Whisper モデル (tiny/base/small/medium/large-v3)"
+        type: string
+        default: small
+      max_episodes:
+        description: "今回処理する最大件数 (0 = 時間予算まで無制限)"
+        type: string
+        default: "0"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: collect-standfm
+  cancel-in-progress: false
+
+env:
+  STANDFM_CHANNEL_ID: 5f5edcc0f04555115dfb0845
+  TRANSCRIBE_ENGINE: ${{ inputs.engine || 'faster-whisper' }}
+  WHISPER_MODEL: ${{ inputs.whisper_model || 'small' }}
+  GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+  # push は疎通確認用に3件だけ。定期実行は時間予算いっぱいまで回す。
+  MAX_EPISODES: ${{ inputs.max_episodes || (github.event_name == 'push' && '3' || '0') }}
+  TIME_BUDGET_MIN: ${{ github.event_name == 'push' && '45' || '300' }}
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/okuda-core-thinking-qp8c80
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: 依存関係をインストール
+        run: pip install -r requirements.txt
+
+      - name: Whisper モデルをキャッシュ
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: whisper-${{ env.WHISPER_MODEL }}-v1
+
+      - name: エピソード一覧を取得
+        id: fetch
+        run: python scripts/fetch_episodes.py
+
+      - name: 音声を取得して文字起こし
+        if: steps.fetch.outcome == 'success'
+        run: python scripts/run.py
+
+      - name: 診断ログを保存
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostics-${{ github.run_id }}
+          path: |
+            diagnostics/
+            data/fetch_report.json
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: 結果をコミット
+        if: always()
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A data transcripts
+          if git diff --cached --quiet; then
+            echo "変更なし"
+            exit 0
+          fi
+          count=$(ls transcripts/*.md 2>/dev/null | wc -l | tr -d ' ')
+          git commit -m "chore(collect): stand.fm 文字起こしを更新 (累計 ${count} 件) [skip ci]"
+          for attempt in 1 2 3 4; do
+            git pull --rebase origin claude/okuda-core-thinking-qp8c80 || true
+            if git push origin HEAD:claude/okuda-core-thinking-qp8c80; then
+              echo "push 成功"
+              exit 0
+            fi
+            echo "push 失敗。${attempt} 回目、待機して再試行する"
+            sleep $((2 ** attempt))
+          done
+          echo "push に4回失敗した"
+          exit 1
+
+      - name: サマリを出力
+        if: always()
+        run: |
+          {
+            echo "## 収集結果"
+            echo ""
+            if [ -f data/fetch_report.json ]; then
+              echo "### 取得戦略"
+              echo '```json'
+              python -c "import json;d=json.load(open('data/fetch_report.json'));d.pop('log',None);print(json.dumps(d,ensure_ascii=False,indent=2))"
+              echo '```'
+            fi
+            if [ -f data/state.json ]; then
+              echo "### 進捗"
+              echo '```json'
+              python -c "import json;d=json.load(open('data/state.json'));print(json.dumps({'done':len(d.get('done',{})),'failed':len(d.get('failed',{})),'total':d.get('total_episodes')},ensure_ascii=False,indent=2))"
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
