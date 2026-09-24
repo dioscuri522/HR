@@ -101,7 +101,7 @@ jobs:
             echo "変更なし"
             exit 0
           fi
-          count=$(ls transcripts/*.md 2>/dev/null | wc -l | tr -d ' ')
+          count=$(find transcripts -name '*.md' | wc -l | tr -d ' ')
           git commit -m "chore(collect): stand.fm 文字起こしを更新 (累計 ${count} 件) [skip ci]"
           for attempt in 1 2 3 4; do
             git pull --rebase origin claude/okuda-core-thinking-qp8c80 || true

@@ -1,0 +1,32 @@
+name: probe-standfm
+
+# stand.fm のエンドポイント構造を Actions 上で実地調査し、結果をログに出す。
+# 開発環境からは stand.fm に到達できないため、構造確認の手段はこれしかない。
+
+on:
+  push:
+    branches: [claude/okuda-core-thinking-qp8c80]
+    paths:
+      - "scripts/probe.py"
+      - ".github/workflows/probe-standfm.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/okuda-core-thinking-qp8c80
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install requests
+      - name: エンドポイントを調査
+        env:
+          STANDFM_CHANNEL_ID: 5f5edcc0f04555115dfb0845
+        run: python scripts/probe.py
