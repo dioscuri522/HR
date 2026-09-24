@@ -1,24 +1,22 @@
 #!/usr/bin/env python3
-"""stand.fm のエンドポイント構造を実地調査する（第4次）。
+"""stand.fm のページングを実地検証する（第5次・最終）。
 
-第3次で判明した決定的な手がかり:
-  JSバンドルの中に API ルートのテンプレートが埋まっていた。
-    /channels/{channel_id}/appending        ← 追加読み込み用と推測される
-    /channels/{channel_id}/latest_announcement
-    /episodes/{episode_id}/playback
-  ベースURLは "}/api/" というテンプレート結合で組み立てられている。
+第4次の結果:
+  GET /api/channels/{id}/appending?limit=50&lastEpisodeId=X → 50件（新規40件）
+  limit が効くことは確定した。
 
-あわせて、エピソードページのHTMLには24桁IDが494件埋まっていた
-（チャンネルページは23件のみ）。ここから列挙できる可能性もある。
+ただし前回はカーソルに「最新のエピソードID」を渡していた。
+episodes は dict であり、キーの並び順は publishedAt の昇順だった
+（ids[0] が最古、ids[-1] が最新）。カーソルには最古のIDを渡すべきなので、
+本スクリプトでは publishedAt で明示的にソートして最小値を使う。
 
-クエリパラメータによるページングは16通り試して全滅（応答が完全に同一）。
-本スクリプトは appending ルートの検証に集中する。
+検証するのは次の2点だけ:
+  A. limit の上限はどこか
+  B. カーソルを正しく渡せば本当に全1033件を辿れるか
 """
 from __future__ import annotations
 
-import json
 import os
-import re
 import time
 
 import requests
@@ -28,133 +26,73 @@ S = requests.Session()
 S.headers.update({
     "User-Agent": ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
                    "(KHTML, like Gecko) Chrome/125.0 Safari/537.36"),
+    "Accept": "application/json",
     "Accept-Language": "ja,en;q=0.8",
 })
-
-BASE = f"https://stand.fm/api/channels/{CHANNEL_ID}"
-OBJECT_ID_RE = re.compile(r"\b[0-9a-f]{24}\b")
+APPEND = f"https://stand.fm/api/channels/{CHANNEL_ID}/appending"
 
 
 def section(title: str) -> None:
     print("\n" + "=" * 70 + f"\n{title}\n" + "=" * 70, flush=True)
 
 
-def fetch(url: str, method: str = "GET", quiet: bool = False, **kw):
+def page(**params) -> tuple[dict, bool]:
+    """1ページ取得して (エピソードdict, hasNextEpisode) を返す。"""
     try:
-        res = S.request(method, url, timeout=30, **kw)
+        res = S.get(APPEND, params=params, timeout=30)
     except requests.RequestException as exc:
-        print(f"[NG ] {method} {url} -> {type(exc).__name__}")
-        return None
+        print(f"  [NG] {params} -> {type(exc).__name__}")
+        return {}, False
     finally:
-        time.sleep(0.4)
-    if not quiet:
-        ctype = res.headers.get("content-type", "?").split(";")[0]
-        print(f"[{res.status_code}] {method} {url.replace(BASE, '…')}  {len(res.content)}B  {ctype}")
-    return res
+        time.sleep(0.5)
+    if res.status_code != 200 or "json" not in res.headers.get("content-type", ""):
+        print(f"  [{res.status_code}] {params}")
+        return {}, False
+    body = res.json().get("response") or {}
+    return body.get("episodes") or {}, bool(body.get("hasNextEpisode"))
 
 
-def as_json(res):
-    if res is None or res.status_code != 200 or "json" not in res.headers.get("content-type", ""):
-        return None
-    try:
-        return res.json()
-    except ValueError:
-        return None
+def oldest_of(eps: dict) -> tuple[str, int]:
+    """publishedAt が最小のエピソードの (id, publishedAt) を返す。"""
+    if not eps:
+        return "", 0
+    eid = min(eps, key=lambda k: eps[k].get("publishedAt") or 0)
+    return eid, eps[eid].get("publishedAt") or 0
 
-
-def eps_of(data) -> dict:
-    return ((data or {}).get("response") or {}).get("episodes") or {}
-
-
-base_data = as_json(fetch(BASE, quiet=True)) or {}
-base_eps = eps_of(base_data)
-ids = list(base_eps)
-oldest = ids[-1] if ids else ""
-oldest_ts = base_eps.get(oldest, {}).get("publishedAt", 0) if oldest else 0
-print(f"基準: {len(ids)} 件 / 最古ID={oldest} / publishedAt={oldest_ts}")
 
 # ---------------------------------------------------------------- A
-section("A. /api/channels/{id}/appending の検証")
-for suffix in [
-    "",
-    f"?lastEpisodeId={oldest}",
-    f"?episodeId={oldest}",
-    f"?publishedAt={oldest_ts}",
-    f"?lastPublishedAt={oldest_ts}",
-    f"?limit=50&lastEpisodeId={oldest}",
-    f"?limit=50&publishedAt={oldest_ts}",
-    f"?cursor={oldest}",
-    f"?offset=10",
-]:
-    url = f"{BASE}/appending{suffix}"
-    res = fetch(url, headers={"Accept": "application/json"})
-    data = as_json(res)
-    if data is None:
-        continue
-    page = eps_of(data)
-    new = set(page) - set(ids)
-    print(f"    -> {len(page)} 件 / 新規 {len(new)} 件 / "
-          f"hasNext={(data.get('response') or {}).get('hasNextEpisode')}"
-          f"{'  ★★★ 新規あり' if new else ''}")
-    if not page:
-        print(f"    トップレベルキー: {list(data)[:10]} / response キー: {list((data.get('response') or {}))[:15]}")
-
-print("--- POST でも試す ---")
-for body in [{}, {"lastEpisodeId": oldest}, {"channelId": CHANNEL_ID, "lastEpisodeId": oldest}]:
-    res = fetch(f"{BASE}/appending", method="POST", json=body,
-                headers={"Accept": "application/json"})
-    data = as_json(res)
-    if data is not None:
-        page = eps_of(data)
-        print(f"    body={list(body)} -> {len(page)} 件 / 新規 {len(set(page) - set(ids))} 件")
+section("A. limit の上限")
+for limit in (10, 50, 100, 200, 500, 1200):
+    eps, has_next = page(limit=limit)
+    print(f"  limit={limit:<5} -> {len(eps):<5} 件 / hasNext={has_next}")
 
 # ---------------------------------------------------------------- B
-section("B. エピソード詳細に前後エピソードへの導線があるか")
-detail = as_json(fetch(f"https://stand.fm/api/episodes/{oldest}"))
-if detail:
-    resp = detail.get("response") or detail
-    print(f"    トップレベルキー: {list(detail)}")
-    print(f"    response のキー: {list(resp)[:25]}")
-    blob = json.dumps(detail, ensure_ascii=False)
-    for key in sorted(set(re.findall(r'"([A-Za-z_]*(?:[Nn]ext|[Pp]rev|[Rr]elated|[Nn]eighbo)[A-Za-z_]*)"', blob))):
-        print(f"    ★ 前後を示唆するキー: {key}")
-    ep_block = (resp.get("episodes") or {}) if isinstance(resp, dict) else {}
-    print(f"    response.episodes に含まれる件数: {len(ep_block)}")
-    if ep_block:
-        for eid, ev in list(ep_block.items())[:6]:
-            print(f"      {eid} {str(ev.get('title'))[:40]}")
+section("B. カーソルを最古IDにしてページングを実走")
+for cursor_name in ("lastEpisodeId", "publishedAt"):
+    print(f"\n--- カーソル: {cursor_name} ---")
+    seen: dict[str, dict] = {}
+    eps, has_next = page(limit=50)
+    seen.update(eps)
+    cursor_id, cursor_ts = oldest_of(eps)
+    print(f"  1ページ目: {len(eps)} 件 / 累計 {len(seen)} / 最古 {cursor_id}")
 
-# ---------------------------------------------------------------- C
-section("C. エピソードページHTMLの24桁IDは本当にエピソードIDか")
-res = fetch(f"https://stand.fm/episodes/{oldest}")
-html_ids: list[str] = []
-if res is not None and res.status_code == 200:
-    html_ids = sorted(set(OBJECT_ID_RE.findall(res.text)))
-    print(f"    HTML内の24桁ID: {len(html_ids)} 件")
-    hit = miss = 0
-    for cand in html_ids[:12]:
-        r = fetch(f"https://stand.fm/api/episodes/{cand}", quiet=True)
-        d = as_json(r)
-        ok = bool(d) and bool(eps_of(d))
-        ch = ""
-        if ok:
-            first = next(iter(eps_of(d).values()))
-            ch = first.get("channelId", "")
-            hit += 1
-        else:
-            miss += 1
-        print(f"      {cand} -> {'エピソード' if ok else '×'}"
-              f"{' (当チャンネル)' if ch == CHANNEL_ID else (f' (他: {ch})' if ch else '')}")
-    print(f"    12件中 エピソード {hit} 件 / それ以外 {miss} 件")
+    for i in range(2, 12):
+        value = cursor_id if cursor_name == "lastEpisodeId" else cursor_ts
+        eps, has_next = page(limit=50, **{cursor_name: value})
+        new = set(eps) - set(seen)
+        seen.update(eps)
+        print(f"  {i}ページ目: {len(eps)} 件 / 新規 {len(new)} / 累計 {len(seen)} / hasNext={has_next}")
+        if not new:
+            print("  → 新規が出なくなったため打ち切り")
+            break
+        cursor_id, cursor_ts = oldest_of(eps)
+        if not has_next:
+            print("  → hasNextEpisode が False になった")
+            break
 
-# ---------------------------------------------------------------- D
-section("D. その他の判明ルート")
-for url in [
-    f"{BASE}/latest_announcement",
-    f"{BASE}/announcements",
-    f"https://stand.fm/api/episodes/{oldest}/playback",
-]:
-    res = fetch(url, headers={"Accept": "application/json"})
-    data = as_json(res)
-    if data is not None:
-        print(f"    キー: {list(data)[:8]} / {json.dumps(data, ensure_ascii=False)[:200]}")
+    if seen:
+        oldest_id, oldest_ts = oldest_of(seen)
+        newest_ts = max((e.get("publishedAt") or 0) for e in seen.values())
+        import datetime as dt
+        fmt = lambda ms: dt.datetime.fromtimestamp(ms / 1000, dt.timezone.utc).strftime("%Y-%m-%d")
+        print(f"  結果: 累計 {len(seen)} 件 / 期間 {fmt(oldest_ts)} 〜 {fmt(newest_ts)}")
