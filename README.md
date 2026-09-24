@@ -24,12 +24,31 @@ data/fetch_report.json                 どの取得戦略が通ったかの記�
 transcripts/<日付>_<ID>.md             文字起こし（自動生成）
 ```
 
+## 確定した取得経路
+
+実地調査（Actions 上で5次にわたって実施）で以下を確定させた。
+
+```
+一覧  GET /api/channels/{channelId}/appending?limit=2000
+        → response.episodes に全1033件。hasNextEpisode=false。カーソル不要
+音声  GET /api/episodes/{episodeId}
+        → https://cdncf.stand.fm/audios/{ULID}.m4a
+```
+
+判明した注意点:
+
+- 公開RSSは存在しない（`channelRssUrl` は null、`/rss` 系はすべて404）
+- `sitemap.xml` / `robots.txt` も404
+- `/api/channels/{id}`（`appending` なし）は `limit` を無視して常に最新10件しか返さない。
+  パラメータ名を16通り試したが応答が完全に同一だった
+- `totalDuration` の単位はミリ秒
+- `episodes` は dict で、キーの並びは `publishedAt` の昇順
+
 ## 動作
 
-1. `fetch_episodes.py` が3つの戦略を順に試し、最初に成功したものを採用する。
-   RSS → チャンネルページ埋め込みJSON → 内部API の順。
-   全滅した場合は生レスポンスを `diagnostics/` に落とし、Actions のアーティファクトに残す。
+1. `fetch_episodes.py` が上記の一覧APIから全エピソードのメタデータを取得する。
 2. `run.py` が未処理エピソードを古い順にダウンロードして文字起こしし、`transcripts/` に書き出す。
+   音声URLはダウンロード直前に `/api/episodes/{id}` から解決する。
    処理済みは `data/state.json` で管理され、再実行しても重複処理しない。
 3. 時間予算（既定300分）で打ち切り、残りは次回の実行に持ち越す。
    Actions のジョブ上限6時間に収めるための措置。
@@ -47,10 +66,11 @@ transcripts/<日付>_<ID>.md             文字起こし（自動生成）
 
 ## 実行方法
 
-- **push トリガー**: `scripts/` か workflow を変更して push すると、疎通確認として3件だけ処理する。
-- **定期実行 / 手動実行**: `schedule` と `workflow_dispatch` は、**ワークフローファイルが
-  デフォルトブランチ (`master`) に存在して初めて有効になる**（GitHub の仕様）。
-  本格運用するには、このワークフローを `master` にマージする必要がある。
+- `verify-standfm.yml` は取得経路が機能するかを確認するだけで、何もコミットしない。
+- `collect-standfm.yml` は文字起こし全文をリポジトリにコミットするため、**自動起動しない**
+  設定にしてある（`workflow_dispatch` のみ）。保存先の扱いが決まるまでは手動実行が必要。
+  なお `workflow_dispatch` は、ワークフローファイルがデフォルトブランチ (`master`) に
+  存在して初めて有効になる（GitHub の仕様）。
 
 ## 環境変数
 
@@ -64,11 +84,18 @@ transcripts/<日付>_<ID>.md             文字起こし（自動生成）
 | `TIME_BUDGET_MIN` | `300` | 打ち切りまでの分数 |
 | `ORDER` | `old` | `old`＝古い順（思考の変遷を追う）／`new`＝新しい順 |
 
-## 未検証の箇所
+## 規模
 
-stand.fm の RSS・内部API のエンドポイント構造は**実機で未確認**（開発環境から到達できないため）。
-`fetch_episodes.py` は複数候補を総当たりする作りにしてあり、Actions の実行ログと
-`diagnostics/` の生レスポンスを見て調整する前提になっている。
-また、ログイン必須・限定公開のエピソードは取得対象外。
+| 項目 | 値 |
+|---|---|
+| エピソード数 | 1033 |
+| 1件あたりの尺 | 中央値 約10分（最短16秒／最長約18分） |
+| 限定公開・支援者限定 | 確認した範囲では0件 |
+
+## 取り扱い上の注意
+
+エピソードの説明文に、著作権は WGSL に帰属し、第三者による複製および送信可能化を
+禁じる旨が明記されている。文字起こし全文をどこに保存するかは、この記載を踏まえて
+決める必要がある。`collect-standfm.yml` を自動起動させていないのはこのため。
 
 収集はチャンネルに負荷をかけないよう、リクエスト間に待機（既定1秒）を入れている。

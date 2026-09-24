@@ -28,6 +28,8 @@ CACHE = ROOT / "audio_cache"
 MAX_EPISODES = int(os.environ.get("MAX_EPISODES", "0"))  # 0 = 無制限
 TIME_BUDGET_MIN = float(os.environ.get("TIME_BUDGET_MIN", "300"))
 ORDER = os.environ.get("ORDER", "old")  # old = 古い順（思考の変遷を追う）／new = 新しい順
+SHARD_COUNT = int(os.environ.get("SHARD_COUNT", "1"))
+SHARD_INDEX = int(os.environ.get("SHARD_INDEX", "0"))
 SLEEP_SEC = float(os.environ.get("DOWNLOAD_SLEEP_SEC", "1.0"))
 
 UA = os.environ.get(
@@ -46,6 +48,39 @@ def slugify(text: str, limit: int = 60) -> str:
 def transcript_path(ep: dict) -> Path:
     date = (ep.get("published_at") or "0000-00-00")[:10]
     return TRANSCRIPTS / f"{date}_{slugify(ep['id'], 40)}.md"
+
+
+def resolve_audio_url(ep_id: str) -> str:
+    """エピソード詳細APIから音声URLを取り出す。
+
+    一覧APIの応答には音声URLが含まれないため、ダウンロード直前に解決する。
+    応答には nextEpisodes や recommendedEpisodes など他エピソードの情報も
+    混ざるので、必ず当該エピソードのオブジェクトの中だけを見る。
+    """
+    url = f"https://stand.fm/api/episodes/{ep_id}"
+    res = requests.get(url, headers={"User-Agent": UA, "Accept": "application/json"}, timeout=60)
+    res.raise_for_status()
+    body = res.json().get("response") or {}
+    own = (body.get("episodes") or {}).get(ep_id)
+    if own is None:
+        raise RuntimeError(f"エピソード {ep_id} が応答に含まれない")
+
+    found: list[str] = []
+
+    def walk(obj) -> None:
+        if isinstance(obj, dict):
+            for value in obj.values():
+                walk(value)
+        elif isinstance(obj, list):
+            for item in obj:
+                walk(item)
+        elif isinstance(obj, str) and obj.startswith("http") and ".m4a" in obj:
+            found.append(obj)
+
+    walk(own)
+    if not found:
+        raise RuntimeError(f"エピソード {ep_id} の音声URLが見つからない")
+    return found[0]
 
 
 def download(url: str, dest: Path) -> Path:
@@ -133,11 +168,15 @@ def main() -> int:
         pending.append(ep)
 
     pending.sort(key=lambda e: (e.get("published_at") or ""), reverse=(ORDER == "new"))
+    if SHARD_COUNT > 1:
+        # 並列ジョブで分担する。並び順は安定しているのでシャード同士は重複しない。
+        pending = [e for i, e in enumerate(pending) if i % SHARD_COUNT == SHARD_INDEX]
     if MAX_EPISODES > 0:
         pending = pending[:MAX_EPISODES]
 
     print(f"全 {len(episodes)} 件 / 処理済 {len(done)} 件 / 今回対象 {len(pending)} 件")
-    print(f"エンジン: {ENGINE} / 時間予算: {TIME_BUDGET_MIN} 分 / 順序: {ORDER}")
+    shard = f" / シャード {SHARD_INDEX + 1}/{SHARD_COUNT}" if SHARD_COUNT > 1 else ""
+    print(f"エンジン: {ENGINE} / 時間予算: {TIME_BUDGET_MIN} 分 / 順序: {ORDER}{shard}")
 
     started = time.monotonic()
     processed = 0
@@ -148,9 +187,11 @@ def main() -> int:
             break
 
         print(f"[{index}/{len(pending)}] {ep.get('published_at','?')} {ep.get('title','')[:50]}")
-        audio = CACHE / f"{slugify(ep['id'], 40)}{Path(ep['audio_url'].split('?')[0]).suffix or '.m4a'}"
+        audio = CACHE / f"{slugify(ep['id'], 40)}.m4a"
         try:
-            download(ep["audio_url"], audio)
+            audio_url = ep.get("audio_url") or resolve_audio_url(ep["id"])
+            ep["audio_url"] = audio_url
+            download(audio_url, audio)
             print(f"  ダウンロード完了 {audio.stat().st_size / 1e6:.1f} MB")
             result = transcribe(audio)
             path = transcript_path(ep)

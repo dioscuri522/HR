@@ -1,23 +1,23 @@
-name: probe-standfm
+name: verify-standfm
 
-# stand.fm のエンドポイント構造を Actions 上で実地調査し、結果をログに出す。
-# 開発環境からは stand.fm に到達できないため、構造確認の手段はこれしかない。
+# 取得経路が実際に機能するかを確認する。
+# メタデータの集計値をログに出すだけで、何もコミットしない。
 
 on:
   push:
     branches: [claude/okuda-core-thinking-qp8c80]
     paths:
-      - "scripts/probe.py"
-      - ".github/workflows/probe-standfm.yml"
+      - "scripts/fetch_episodes.py"
+      - ".github/workflows/verify-standfm.yml"
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  probe:
+  verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
@@ -26,7 +26,7 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install requests
-      - name: エンドポイントを調査
+      - name: エピソード一覧の取得を検証
         env:
           STANDFM_CHANNEL_ID: 5f5edcc0f04555115dfb0845
-        run: python scripts/probe.py
+        run: python scripts/fetch_episodes.py

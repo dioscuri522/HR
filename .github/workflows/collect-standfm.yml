@@ -7,15 +7,9 @@ name: collect-standfm
 # デフォルトブランチ(master)に存在して初めて有効になる。現時点では
 # push トリガーのみが発火する。
 
+# 収集は成果物（文字起こし全文）をリポジトリにコミットする。
+# 保存先の扱いが決まるまで自動起動はさせない。手動実行のみ。
 on:
-  push:
-    branches: [claude/okuda-core-thinking-qp8c80]
-    paths:
-      - "scripts/**"
-      - ".github/workflows/collect-standfm.yml"
-      - "requirements.txt"
-  schedule:
-    - cron: "17 19 * * *"
   workflow_dispatch:
     inputs:
       engine:
